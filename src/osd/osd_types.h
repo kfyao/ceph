@@ -43,7 +43,7 @@
 #define CEPH_OSD_FEATURE_INCOMPAT_SNAPMAPPER CompatSet::Feature(10, "snapmapper")
 
 
-typedef hobject_t collection_list_handle_t;
+typedef ghobject_t collection_list_handle_t;
 
 
 /**

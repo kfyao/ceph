@@ -450,7 +450,7 @@ int OSD::convert_collection(ObjectStore *store, coll_t cid)
 {
   coll_t tmp0("convertfs_temp");
   coll_t tmp1("convertfs_temp1");
-  vector<hobject_t> objects;
+  vector<ghobject_t> objects;
 
   map<string, bufferptr> aset;
   int r = store->collection_getattrs(cid, aset);
@@ -470,10 +470,10 @@ int OSD::convert_collection(ObjectStore *store, coll_t cid)
     store->apply_transaction(t);
   }
 
-  hobject_t next;
+  ghobject_t next;
   while (!next.is_max()) {
     objects.clear();
-    hobject_t start = next;
+    ghobject_t start = next;
     r = store->collection_list_partial(cid, start,
 				       200, 300, 0,
 				       &objects, &next);
@@ -481,7 +481,7 @@ int OSD::convert_collection(ObjectStore *store, coll_t cid)
       return r;
 
     ObjectStore::Transaction t;
-    for (vector<hobject_t>::iterator i = objects.begin();
+    for (vector<ghobject_t>::iterator i = objects.begin();
 	 i != objects.end();
 	 ++i) {
       t.collection_add(tmp0, cid, *i);
@@ -1747,17 +1747,17 @@ void OSD::recursive_remove_collection(ObjectStore *store, coll_t tmp)
     make_snapmapper_oid());
   SnapMapper mapper(&driver, 0, 0, 0);
 
-  vector<hobject_t> objects;
+  vector<ghobject_t> objects;
   store->collection_list(tmp, objects);
 
   // delete them.
   ObjectStore::Transaction t;
   unsigned removed = 0;
-  for (vector<hobject_t>::iterator p = objects.begin();
+  for (vector<ghobject_t>::iterator p = objects.begin();
        p != objects.end();
        ++p, removed++) {
     OSDriver::OSTransaction _t(driver.get_transaction(&t));
-    int r = mapper.remove_oid(*p, &_t);
+    int r = mapper.remove_oid(p->hobj, &_t);
     if (r != 0 && r != -ENOENT)
       assert(0);
     t.collection_remove(tmp, *p);
@@ -3324,10 +3324,10 @@ bool remove_dir(
   ObjectStore::Sequencer *osr,
   coll_t coll, DeletingStateRef dstate)
 {
-  vector<hobject_t> olist;
+  vector<ghobject_t> olist;
   int64_t num = 0;
   ObjectStore::Transaction *t = new ObjectStore::Transaction;
-  hobject_t next;
+  ghobject_t next;
   while (!next.is_max()) {
     store->collection_list_partial(
       coll,
@@ -3337,11 +3337,11 @@ bool remove_dir(
       0,
       &olist,
       &next);
-    for (vector<hobject_t>::iterator i = olist.begin();
+    for (vector<ghobject_t>::iterator i = olist.begin();
 	 i != olist.end();
 	 ++i, ++num) {
       OSDriver::OSTransaction _t(osdriver->get_transaction(t));
-      int r = mapper->remove_oid(*i, &_t);
+      int r = mapper->remove_oid(i->hobj, &_t);
       if (r != 0 && r != -ENOENT) {
 	assert(0);
       }

@@ -2062,8 +2062,8 @@ void PG::upgrade(ObjectStore *store, const interval_set<snapid_t> &snapcolls)
 	      << " (" << removed << "/" << snapcolls.size()
 	      << ")" << dendl;
 
-      hobject_t cur;
-      vector<hobject_t> objects;
+      ghobject_t cur;
+      vector<ghobject_t> objects;
       while (1) {
 	int r = store->collection_list_partial(
 	  cid,
@@ -2083,7 +2083,7 @@ void PG::upgrade(ObjectStore *store, const interval_set<snapid_t> &snapcolls)
 	  break;
 	}
 	ObjectStore::Transaction t;
-	for (vector<hobject_t>::iterator j = objects.begin();
+	for (vector<ghobject_t>::iterator j = objects.begin();
 	     j != objects.end();
 	     ++j) {
 	  t.remove(cid, *j);
@@ -2107,10 +2107,10 @@ void PG::upgrade(ObjectStore *store, const interval_set<snapid_t> &snapcolls)
     }
   }
 
-  hobject_t cur;
+  ghobject_t cur;
   coll_t cid(info.pgid);
   unsigned done = 0;
-  vector<hobject_t> objects;
+  vector<ghobject_t> objects;
   while (1) {
     dout(1) << "Updating snap_mapper from main collection, "
 	    << done << " objects done" << dendl;
@@ -2133,10 +2133,10 @@ void PG::upgrade(ObjectStore *store, const interval_set<snapid_t> &snapcolls)
     }
     done += objects.size();
     ObjectStore::Transaction t;
-    for (vector<hobject_t>::iterator j = objects.begin();
+    for (vector<ghobject_t>::iterator j = objects.begin();
 	 j != objects.end();
 	 ++j) {
-      if (j->snap < CEPH_MAXSNAP) {
+      if (j->hobj.snap < CEPH_MAXSNAP) {
 	OSDriver::OSTransaction _t(osdriver.get_transaction(&t));
 	bufferptr bp;
 	r = store->getattr(
@@ -2154,11 +2154,11 @@ void PG::upgrade(ObjectStore *store, const interval_set<snapid_t> &snapcolls)
 	object_info_t oi(bl);
 	set<snapid_t> oi_snaps(oi.snaps.begin(), oi.snaps.end());
 	set<snapid_t> cur_snaps;
-	r = snap_mapper.get_snaps(*j, &cur_snaps);
+	r = snap_mapper.get_snaps(j->hobj, &cur_snaps);
 	if (r == 0) {
 	  assert(cur_snaps == oi_snaps);
 	} else if (r == -ENOENT) {
-	  snap_mapper.add_oid(*j, oi_snaps, &_t);
+	  snap_mapper.add_oid(j->hobj, oi_snaps, &_t);
 	} else {
 	  derr << __func__ << ": get_snaps returned "
 	       << cpp_strerror(r) << dendl;
@@ -2752,22 +2752,24 @@ void PG::sub_op_scrub_map(OpRequestRef op)
  * pg lock may or may not be held
  */
 void PG::_scan_list(
-  ScrubMap &map, vector<hobject_t> &ls, bool deep,
+  ScrubMap &map, vector<ghobject_t> &ls, bool deep,
   ThreadPool::TPHandle &handle)
 {
   dout(10) << "_scan_list scanning " << ls.size() << " objects"
            << (deep ? " deeply" : "") << dendl;
   int i = 0;
-  for (vector<hobject_t>::iterator p = ls.begin(); 
+  for (vector<ghobject_t>::iterator p = ls.begin();
        p != ls.end(); 
        ++p, i++) {
+    // XXX: For now assert because we don't yet check for deleted gens
+    assert(p->generation == ghobject_t::NO_GEN);
     handle.reset_tp_timeout();
-    hobject_t poid = *p;
+    ghobject_t poid = *p;
 
     struct stat st;
     int r = osd->store->stat(coll, poid, &st, true);
     if (r == 0) {
-      ScrubMap::object &o = map.objects[poid];
+      ScrubMap::object &o = map.objects[poid.hobj];
       o.size = st.st_size;
       assert(!o.negative);
       osd->store->getattrs(coll, poid, o.attrs);
@@ -2844,7 +2846,7 @@ void PG::_scan_list(
       dout(25) << "_scan_list  " << poid << " got " << r << ", skipping" << dendl;
     } else if (r == -EIO) {
       dout(25) << "_scan_list  " << poid << " got " << r << ", read_error" << dendl;
-      ScrubMap::object &o = map.objects[poid];
+      ScrubMap::object &o = map.objects[poid.hobj];
       o.read_error = true;
     } else {
       derr << "_scan_list got: " << cpp_strerror(r) << dendl;
@@ -3106,7 +3108,7 @@ int PG::build_scrub_map_chunk(
   map.valid_through = info.last_update;
 
   // objects
-  vector<hobject_t> ls;
+  vector<ghobject_t> ls;
   int ret = osd->store->collection_list_range(coll, start, end, 0, &ls);
   if (ret < 0) {
     dout(5) << "collection_list_range error: " << ret << dendl;
@@ -3141,7 +3143,7 @@ void PG::build_scrub_map(ScrubMap &map, ThreadPool::TPHandle &handle)
   osr->flush();
 
   // objects
-  vector<hobject_t> ls;
+  vector<ghobject_t> ls;
   osd->store->collection_list(coll, ls);
 
   _scan_list(map, ls, false, handle);
@@ -3173,7 +3175,7 @@ void PG::build_inc_scrub_map(
 {
   map.valid_through = last_update_applied;
   map.incr_since = v;
-  vector<hobject_t> ls;
+  vector<ghobject_t> ls;
   list<pg_log_entry_t>::const_iterator p;
   if (v == pg_log.get_tail()) {
     p = pg_log.get_log().log.begin();
@@ -3626,9 +3628,9 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
           // list, and so forth.
 
           bool boundary_found = false;
-          hobject_t start = scrubber.start;
+          ghobject_t start = scrubber.start;
           while (!boundary_found) {
-            vector<hobject_t> objects;
+            vector<ghobject_t> objects;
             ret = osd->store->collection_list_partial(coll, start,
                                                       g_conf->osd_scrub_chunk_min,
 						      g_conf->osd_scrub_chunk_max,
@@ -3647,7 +3649,8 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
             // search backward from the end looking for a boundary
             objects.push_back(scrubber.end);
             while (!boundary_found && objects.size() > 1) {
-              hobject_t end = objects.back().get_boundary();
+	      // XXX: How does get_boundary and ghobject_t interact?
+              ghobject_t end = objects.back().get_boundary();
               objects.pop_back();
 
               if (objects.back().get_filestore_key() != end.get_filestore_key()) {
@@ -3675,8 +3678,11 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
 
         // request maps from replicas
         for (unsigned i=1; i<acting.size(); i++) {
+	  // XXX: Scrubbing needs to be enhanced
+	  assert(scrubber.start.generation == ghobject_t::NO_GEN);
+	  assert(scrubber.end.generation == ghobject_t::NO_GEN);
           _request_scrub_map(acting[i], scrubber.subset_last_update,
-                             scrubber.start, scrubber.end, scrubber.deep);
+                     scrubber.start.hobj, scrubber.end.hobj, scrubber.deep);
           scrubber.waiting_on_whom.insert(acting[i]);
           ++scrubber.waiting_on;
         }
@@ -3707,9 +3713,12 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
       case PG::Scrubber::BUILD_MAP:
         assert(last_update_applied >= scrubber.subset_last_update);
 
+	// XXX: Scrubbing needs to be enhanced
+	assert(scrubber.start.generation == ghobject_t::NO_GEN);
+	assert(scrubber.end.generation == ghobject_t::NO_GEN);
         // build my own scrub map
         ret = build_scrub_map_chunk(scrubber.primary_scrubmap,
-                                    scrubber.start, scrubber.end,
+                                    scrubber.start.hobj, scrubber.end.hobj,
                                     scrubber.deep,
 				    handle);
         if (ret < 0) {
