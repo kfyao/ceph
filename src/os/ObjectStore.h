@@ -838,6 +838,14 @@ public:
   ObjectStore() : logger(NULL) {}
   virtual ~ObjectStore() {}
 
+  CompatSet get_empty_compat_set() {
+    CompatSet::FeatureSet ceph_osd_feature_compat;
+    CompatSet::FeatureSet ceph_osd_feature_ro_compat;
+    CompatSet::FeatureSet ceph_osd_feature_incompat;
+    return CompatSet(ceph_osd_feature_compat, ceph_osd_feature_ro_compat,
+		   ceph_osd_feature_incompat);
+  }
+
   // mgmt
   virtual int version_stamp_is_valid(uint32_t *version) { return 1; }
   virtual int update_version_stamp() = 0;
@@ -847,6 +855,8 @@ public:
   virtual int get_max_object_name_length() = 0;
   virtual int mkfs() = 0;  // wipe
   virtual int mkjournal() = 0; // journal only
+  virtual CompatSet get_supported_compat_set() { return get_empty_compat_set(); }
+  virtual CompatSet get_fs_compat_set() { return get_empty_compat_set(); }
 
   virtual int statfs(struct statfs *buf) = 0;
 

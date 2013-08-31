@@ -90,6 +90,23 @@ using ceph::crypto::SHA1;
 #define REPLAY_GUARD_XATTR "user.cephos.seq"
 #define GLOBAL_REPLAY_GUARD_XATTR "user.cephos.gseq"
 
+// Initial CompatSet for a new file store
+static CompatSet get_initial_compat_set() {
+  CompatSet::FeatureSet ceph_osd_feature_compat;
+  CompatSet::FeatureSet ceph_osd_feature_ro_compat;
+  CompatSet::FeatureSet ceph_osd_feature_incompat;
+  return CompatSet(ceph_osd_feature_compat, ceph_osd_feature_ro_compat,
+		   ceph_osd_feature_incompat);
+}
+
+// Supported CompatSet features for this file store
+CompatSet FileStore::get_supported_compat_set() {
+  CompatSet::FeatureSet ceph_osd_feature_compat;
+  CompatSet::FeatureSet ceph_osd_feature_ro_compat;
+  CompatSet::FeatureSet ceph_osd_feature_incompat;
+  return CompatSet(ceph_osd_feature_compat, ceph_osd_feature_ro_compat,
+		   ceph_osd_feature_incompat);
+}
 
 void FileStore::FSPerfTracker::update_from_perfcounters(
   PerfCounters &logger)
@@ -591,6 +608,14 @@ int FileStore::mkfs()
     goto close_fsid_fd;
   }
 
+  compatset = get_initial_compat_set();
+  ret = write_compat_set();
+  if (ret < 0) {
+    derr << "mkfs: write_compat_set() failed: "
+	 << cpp_strerror(ret) << dendl;
+    goto close_fsid_fd;
+  }
+
   struct statfs basefs;
   ret = ::fstatfs(basedir_fd, &basefs);
   if (ret < 0) {
@@ -916,6 +941,48 @@ int FileStore::_sanity_check_fs()
   return 0;
 }
 
+int FileStore::write_compat_set()
+{
+  char fn[PATH_MAX];
+  snprintf(fn, sizeof(fn), "%s/compat", basedir.c_str());
+  int fd = ::open(fn, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+  if (fd < 0)
+    return -errno;
+  bufferlist bl;
+  ::encode(compatset, bl);
+  
+  int ret = safe_write(fd, bl.c_str(), bl.length());
+  TEMP_FAILURE_RETRY(::close(fd));
+  if (ret < 0)
+    return -errno;
+  return 0;
+}
+
+int FileStore::read_compat_set()
+{
+  char fn[PATH_MAX];
+  snprintf(fn, sizeof(fn), "%s/compat", basedir.c_str());
+  int fd = ::open(fn, O_RDONLY, 0644);
+  if (fd < 0) {
+    if (errno == ENOENT) {
+      // If the file doesn't exist write empty CompatSet
+      int ret = write_compat_set();
+      return ret;
+    } else 
+      return -errno;
+  }
+  bufferptr bp(PATH_MAX);
+  int ret = safe_read(fd, bp.c_str(), bp.length());
+  TEMP_FAILURE_RETRY(::close(fd));
+  if (ret < 0)
+    return -errno;
+  bufferlist bl;
+  bl.push_back(bp);
+  bufferlist::iterator i = bl.begin();
+  ::decode(compatset, i);
+  return 0;
+}
+
 int FileStore::update_version_stamp()
 {
   return write_version_stamp();
@@ -1003,6 +1070,7 @@ int FileStore::mount()
   char buf[PATH_MAX];
   uint64_t initial_op_seq;
   set<string> cluster_snaps;
+  CompatSet supported_compat_set = get_supported_compat_set();
 
   dout(5) << "basedir " << basedir << " journal " << journalpath << dendl;
   
@@ -1061,6 +1129,21 @@ int FileStore::mount()
 	   << dendl;
       goto close_fsid_fd;
     }
+  }
+
+  ret = read_compat_set();
+  if (ret < 0) {
+    ret = -EINVAL;
+    goto close_fsid_fd;
+  }
+
+  // Check if this OSD supports all the necessary features to mount
+  // Currently, we don't support read-only mounts as there are no read-only features
+  if (supported_compat_set.compare(compatset) == -1) {
+    derr << "FileStore::mount : Incompatible features set "
+	   << compatset << dendl;
+    ret = -EINVAL;
+    goto close_fsid_fd;
   }
 
   // open some dir handles

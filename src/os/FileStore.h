@@ -309,7 +309,7 @@ public:
   int _sanity_check_fs();
   
   bool test_mount_in_use();
-  int write_version_stamp();
+  int write_version_stamp();	//Could be private
   int version_stamp_is_valid(uint32_t *version);
   int update_version_stamp();
   int read_op_seq(uint64_t *seq);
@@ -319,6 +319,10 @@ public:
   int get_max_object_name_length();
   int mkfs();
   int mkjournal();
+  int write_compat_set();
+  CompatSet get_supported_compat_set();
+  CompatSet get_fs_compat_set() { return compatset; }
+  int read_compat_set();
 
   int statfs(struct statfs *buf);
 
@@ -549,6 +553,7 @@ private:
   std::ofstream m_filestore_dump;
   JSONFormatter m_filestore_dump_fmt;
   atomic_t m_filestore_kill_at;
+  CompatSet compatset;
 
   friend class FileStoreBackend;
 };

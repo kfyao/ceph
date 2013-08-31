@@ -69,7 +69,7 @@ const int fd_none = INT_MIN;
 //can be added to the export format.
 struct super_header {
   static const uint32_t super_magic = (shortmagic << 16) | shortmagic;
-  static const uint32_t super_ver = 1;
+  static const uint32_t super_ver = 2;
   static const uint32_t FIXED_LENGTH = 16;
   uint32_t magic;
   uint32_t version;
@@ -139,18 +139,24 @@ struct footer {
 
 struct pg_begin {
   pg_t pgid;
+  CompatSet compatset;
 
-  pg_begin(pg_t pg): pgid(pg) { }
+  pg_begin(pg_t pg, CompatSet cs): pgid(pg), compatset(cs) { }
   pg_begin() { }
 
   void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
+    // New super_ver prevents decode from ver 1
+    ENCODE_START(2, 2, bl);
     ::encode(pgid, bl);
+    ::encode(compatset, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::iterator& bl) {
-    DECODE_START(1, bl);
+    DECODE_START(2, bl);
     ::decode(pgid, bl);
+    if (struct_v > 1) {
+      ::decode(compatset, bl);
+    }
     DECODE_FINISH(bl);
   }
 };
@@ -675,7 +681,12 @@ int do_export(ObjectStore *fs, coll_t coll, pg_t pgid, pg_info_t &info,
 
   write_super();
 
-  pg_begin pgb(pgid);
+  CompatSet cs = fs->get_fs_compat_set();
+  if (debug && file_fd != STDOUT_FILENO) {
+    cout << "Export features: " << cs << std::endl;
+  }
+
+  pg_begin pgb(pgid, cs);
   ret = write_section(TYPE_PG_BEGIN, pgb, file_fd);
   if (ret)
     return ret;
@@ -943,6 +954,17 @@ int do_import(ObjectStore *store)
   pg_begin pgb;
   pgb.decode(ebliter);
   pg_t pgid = pgb.pgid;
+
+  CompatSet supported = store->get_supported_compat_set();
+  if (debug) {
+    cout << "Exported features: " << pgb.compatset << std::endl;
+    cout << "Supported features: " << supported << std::endl;
+  }
+
+  if (supported.compare(pgb.compatset) == -1) {
+    cout << "Export has incompatible features set " << pgb.compatset << std::endl;
+    return 1;
+  }
   
   log_oid = OSD::make_pg_log_oid(pgid);
   biginfo_oid = OSD::make_pg_biginfo_oid(pgid);
